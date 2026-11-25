@@ -1,0 +1,294 @@
+/*
+ * Sistema de Gerenciamento de Senhas de Atendimento Clinico
+ * Categorias: Urgente (U), Preferencial (P), Normal (N)
+ * Ordem de chamada: Urgente > Preferencial > Normal; FIFO dentro de cada categoria.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+#define MAX_FILA 200
+#define MAX_PROXIMAS 5
+#define TAM_LINHA 64
+
+typedef enum { URGENTE = 0, PREFERENCIAL = 1, NORMAL = 2, NUM_CATEGORIAS = 3 } Categoria;
+
+static const char PREFIXO[NUM_CATEGORIAS] = { 'U', 'P', 'N' };
+static const char *NOME_CATEGORIA[NUM_CATEGORIAS] = { "Urgente", "Preferencial", "Normal" };
+
+typedef struct {
+    char genero;      /* 'F' ou 'M' */
+    int idade;
+    int gestante;
+    int lactante;
+    int necessidadeEspecial;
+    int obeso;
+} Paciente;
+
+typedef struct {
+    char codigo[8];   /* ex.: P001 */
+    Categoria categoria;
+    int numero;
+    Paciente paciente;
+} Senha;
+
+typedef struct {
+    Senha itens[MAX_FILA];
+    int inicio;
+    int tamanho;
+} Fila;
+
+typedef struct {
+    Fila filas[NUM_CATEGORIAS];
+    int contadores[NUM_CATEGORIAS];   
+    int atendidas;
+    int emAtendimento;                
+    Senha atual;
+} Sistema;
+
+/* ---------- Entrada e validacao ---------- */
+
+void lerLinha(const char *mensagem, char *destino, int tamanho) {
+    printf("%s", mensagem);
+    if (fgets(destino, tamanho, stdin) == NULL) {
+        printf("\nEntrada encerrada. Finalizando.\n");
+        exit(0);
+    }
+    destino[strcspn(destino, "\n")] = '\0';
+}
+
+int lerInteiro(const char *mensagem, int min, int max) {
+    char linha[TAM_LINHA], *fim;
+    long valor;
+    while (1) {
+        lerLinha(mensagem, linha, sizeof linha);
+        valor = strtol(linha, &fim, 10);
+        if (fim != linha && *fim == '\0' && valor >= min && valor <= max)
+            return (int)valor;
+        printf("  Valor invalido. Digite um numero entre %d e %d.\n", min, max);
+    }
+}
+
+int lerSimNao(const char *mensagem) {
+    char linha[TAM_LINHA];
+    while (1) {
+        lerLinha(mensagem, linha, sizeof linha);
+        if (strlen(linha) == 1) {
+            char c = (char)toupper((unsigned char)linha[0]);
+            if (c == 'S') return 1;
+            if (c == 'N') return 0;
+        }
+        printf("  Resposta invalida. Digite S ou N.\n");
+    }
+}
+
+char lerGenero(void) {
+    char linha[TAM_LINHA];
+    while (1) {
+        lerLinha("Genero (F/M): ", linha, sizeof linha);
+        if (strlen(linha) == 1) {
+            char c = (char)toupper((unsigned char)linha[0]);
+            if (c == 'F' || c == 'M') return c;
+        }
+        printf("  Genero invalido. Digite F ou M.\n");
+    }
+}
+
+/* ---------- Cadastro e classificacao ---------- */
+
+Paciente cadastrarPaciente(void) {
+    Paciente p;
+    p.genero = lerGenero();
+    p.idade = lerInteiro("Idade (0 a 130): ", 0, 130);
+    p.gestante = 0;
+    p.lactante = 0;
+    if (p.genero == 'F') {
+        p.gestante = lerSimNao("Esta gestante? (S/N): ");
+        p.lactante = lerSimNao("Esta lactante? (S/N): ");
+    }
+    p.necessidadeEspecial = lerSimNao("Possui necessidade especial? (S/N): ");
+    p.obeso = lerSimNao("Possui condicao de obesidade? (S/N): ");
+    return p;
+}
+
+Categoria classificarPaciente(const Paciente *p) {
+    if (p->idade > 80)
+        return URGENTE;
+    if (p->gestante || p->lactante || p->necessidadeEspecial || p->obeso ||
+        (p->genero == 'F' && p->idade >= 60) ||
+        (p->genero == 'M' && p->idade >= 65))
+        return PREFERENCIAL;
+    return NORMAL;
+}
+
+/* ---------- Filas ---------- */
+
+int enfileirar(Fila *f, Senha s) {
+    if (f->tamanho >= MAX_FILA)
+        return 0;
+    f->itens[(f->inicio + f->tamanho) % MAX_FILA] = s;
+    f->tamanho++;
+    return 1;
+}
+
+Senha desenfileirar(Fila *f) {
+    Senha s = f->itens[f->inicio];
+    f->inicio = (f->inicio + 1) % MAX_FILA;
+    f->tamanho--;
+    return s;
+}
+
+/* Retorna a categoria da proxima fila a ser chamada, ou -1 se tudo vazio */
+int proximaCategoria(const Sistema *sis) {
+    for (int c = 0; c < NUM_CATEGORIAS; c++)
+        if (sis->filas[c].tamanho > 0)
+            return c;
+    return -1;
+}
+
+int totalEmEspera(const Sistema *sis) {
+    int total = 0;
+    for (int c = 0; c < NUM_CATEGORIAS; c++)
+        total += sis->filas[c].tamanho;
+    return total;
+}
+
+/* ---------- Senhas ---------- */
+
+int gerarSenha(Sistema *sis, Paciente p, Senha *saida) {
+    Categoria cat = classificarPaciente(&p);
+    Senha s;
+    if (sis->filas[cat].tamanho >= MAX_FILA)
+        return 0;
+    sis->contadores[cat]++;
+    s.categoria = cat;
+    s.numero = sis->contadores[cat];
+    s.paciente = p;
+    snprintf(s.codigo, sizeof s.codigo, "%c%03d", PREFIXO[cat], s.numero);
+    enfileirar(&sis->filas[cat], s);
+    *saida = s;
+    return 1;
+}
+
+void registrarSenha(Sistema *sis) {
+    Senha s;
+    printf("\n--- Registro de senha ---\n");
+    Paciente p = cadastrarPaciente();
+    if (gerarSenha(sis, p, &s))
+        printf("\n>>> Senha emitida: %s (%s)\n", s.codigo, NOME_CATEGORIA[s.categoria]);
+    else
+        printf("\nFila de %s cheia. Nao foi possivel emitir a senha.\n",
+               NOME_CATEGORIA[classificarPaciente(&p)]);
+}
+
+/* ---------- Atendimento ---------- */
+
+void consultarProxima(const Sistema *sis) {
+    int c = proximaCategoria(sis);
+    if (c < 0) {
+        printf("\nNao ha senhas aguardando chamada.\n");
+        return;
+    }
+    const Senha *s = &sis->filas[c].itens[sis->filas[c].inicio];
+    printf("\nProxima senha a ser chamada: %s (%s)\n", s->codigo, NOME_CATEGORIA[c]);
+}
+
+void chamarPaciente(Sistema *sis) {
+    if (sis->emAtendimento) {
+        printf("\nJa existe a senha %s em atendimento. Finalize-o antes de chamar outra.\n",
+               sis->atual.codigo);
+        return;
+    }
+    int c = proximaCategoria(sis);
+    if (c < 0) {
+        printf("\nNao ha senhas aguardando chamada.\n");
+        return;
+    }
+    sis->atual = desenfileirar(&sis->filas[c]);
+    sis->emAtendimento = 1;
+    printf("\n*** Chamando senha %s (%s) ***\n", sis->atual.codigo,
+           NOME_CATEGORIA[sis->atual.categoria]);
+}
+
+void identificarEmAtendimento(const Sistema *sis) {
+    if (!sis->emAtendimento)
+        printf("\nNenhuma senha em atendimento no momento.\n");
+    else
+        printf("\nEm atendimento: %s (%s)\n", sis->atual.codigo,
+               NOME_CATEGORIA[sis->atual.categoria]);
+}
+
+void finalizarAtendimento(Sistema *sis) {
+    if (!sis->emAtendimento) {
+        printf("\nNenhum atendimento em andamento para finalizar.\n");
+        return;
+    }
+    printf("\nAtendimento da senha %s finalizado.\n", sis->atual.codigo);
+    sis->emAtendimento = 0;     /* senha atendida nao retorna a fila */
+    sis->atendidas++;
+    printf("Fila atualizada. Aguardando: %d paciente(s).\n", totalEmEspera(sis));
+}
+
+/* ---------- Painel ---------- */
+
+void exibirPainel(const Sistema *sis) {
+    printf("\n========================================\n");
+    printf("          PAINEL DE CHAMADA\n");
+    printf("========================================\n");
+    if (sis->emAtendimento)
+        printf("Senha atual : %s\nCategoria   : %s\n", sis->atual.codigo,
+               NOME_CATEGORIA[sis->atual.categoria]);
+    else
+        printf("Senha atual : ---\nCategoria   : ---\n");
+
+    printf("\nProximas senhas:");
+    int mostradas = 0;
+    for (int c = 0; c < NUM_CATEGORIAS && mostradas < MAX_PROXIMAS; c++) {
+        const Fila *f = &sis->filas[c];
+        for (int i = 0; i < f->tamanho && mostradas < MAX_PROXIMAS; i++) {
+            printf(" %s", f->itens[(f->inicio + i) % MAX_FILA].codigo);
+            mostradas++;
+        }
+    }
+    if (mostradas == 0) printf(" nenhuma");
+
+    printf("\n\nEm espera por categoria:\n");
+    for (int c = 0; c < NUM_CATEGORIAS; c++)
+        printf("  %-13s: %d\n", NOME_CATEGORIA[c], sis->filas[c].tamanho);
+    printf("Atendimentos concluidos: %d\n", sis->atendidas);
+    printf("========================================\n");
+}
+
+/* ---------- Menu ---------- */
+
+void exibirMenu(void) {
+    printf("\n===== SENHAS DE ATENDIMENTO =====\n");
+    printf("1 - Registrar nova senha\n");
+    printf("2 - Consultar proxima senha\n");
+    printf("3 - Chamar proximo paciente\n");
+    printf("4 - Identificar senha em atendimento\n");
+    printf("5 - Finalizar atendimento\n");
+    printf("6 - Exibir painel de chamada\n");
+    printf("0 - Sair\n");
+}
+
+int main(void) {
+    Sistema sis;
+    memset(&sis, 0, sizeof sis);
+    int opcao;
+    do {
+        exibirMenu();
+        opcao = lerInteiro("Opcao: ", 0, 6);
+        switch (opcao) {
+            case 1: registrarSenha(&sis); break;
+            case 2: consultarProxima(&sis); break;
+            case 3: chamarPaciente(&sis); break;
+            case 4: identificarEmAtendimento(&sis); break;
+            case 5: finalizarAtendimento(&sis); break;
+            case 6: exibirPainel(&sis); break;
+            case 0: printf("\nEncerrando o sistema.\n"); break;
+        }
+    } while (opcao != 0);
+    return 0;
+}
